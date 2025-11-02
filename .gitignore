@@ -1,0 +1,24 @@
+# Go build artifacts
+bin/
+build/
+dist/
+/server
+/server.exe
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Data files (SQLite)
+data/*.db
+
+# Logs & coverage
+*.log
+coverage.out
