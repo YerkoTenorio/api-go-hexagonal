@@ -2,8 +2,8 @@
 bin/
 build/
 dist/
-server
-server.exe
+/server
+/server.exe
 
 # IDE/editor
 .vscode/
