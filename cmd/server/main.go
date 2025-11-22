@@ -1,107 +1,73 @@
 package main
 
 import (
-    "log"
-    "net/http"
+	"log"
 
-    "github.com/YerkoTenorio/api-go-hexagonal/modules/task/application"
-    "github.com/YerkoTenorio/api-go-hexagonal/modules/task/infrastructure"
-    "github.com/YerkoTenorio/api-go-hexagonal/modules/task/presentation"
-    "github.com/YerkoTenorio/api-go-hexagonal/shared/config"
-    "github.com/YerkoTenorio/api-go-hexagonal/shared/database"
-    "github.com/gin-gonic/gin"
+	"github.com/YerkoTenorio/api-go-hexagonal/modules/task/application"
+	"github.com/YerkoTenorio/api-go-hexagonal/modules/task/infrastructure"
+	"github.com/YerkoTenorio/api-go-hexagonal/modules/task/presentation"
+	"github.com/YerkoTenorio/api-go-hexagonal/shared/config"
+	"github.com/YerkoTenorio/api-go-hexagonal/shared/database"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 func main() {
-	// cargar la configuracion
+	// Cargar configuración
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Error cargando configuracion: %v", err)
+		log.Fatal("Error cargando configuración:", err)
 	}
 
-	// conectar base de datos
-	db, err := database.NewSQLiteDB(cfg)
+	// Conectar a base de datos con GORM
+	gormDB, err := database.NewGormDB(cfg)
 	if err != nil {
-		log.Fatalf("Error conectando base de datos: %v", err)
+		log.Fatal("Error conectando a la base de datos:", err)
 	}
-	defer db.Close()
+	defer gormDB.Close()
 
-	// Inyección de dependencias (arquitectura hexagonal)
-	// Repositorio (Puerto de salida)
-	taskRepo := infrastructure.NewSQLiteTaskRepository(db)
-	// Servicio de aplicacion (Casos de uso)
-	taskService := application.NewTaskService(taskRepo)
-	// Handler (Puerto de entrada)
-	taskHandler := presentation.NewTaskHandler(taskService)
+	// Crear repositorio con GORM
+	taskRepository := infrastructure.NewGormTaskRepository(gormDB.GetDB())
 
-	// configurar gin
-	if cfg.IsProduction() {
-		gin.SetMode(gin.ReleaseMode)
-	}
-	// crear router
-	router := gin.Default()
-	// Middleware basico
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
+	// Crear servicio de aplicación
+	taskService := application.NewTaskService(taskRepository)
 
-    // Configurar rutas
-    presentation.SetupRoutes(router, taskHandler)
+	// Crear handler con Fiber
+	taskHandler := presentation.NewFiberTaskHandler(taskService)
 
-    // Endpoints de salud
-    router.GET("/health", func(c *gin.Context) {
-        dbKind := "sqlite"
-        isRemote := false
-        if cfg.Database.URL != "" {
-            dbKind = "libSQL"
-            isRemote = true
-        }
+	// Crear aplicación Fiber
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			code := fiber.StatusInternalServerError
+			if e, ok := err.(*fiber.Error); ok {
+				code = e.Code
+			}
+			return c.Status(code).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		},
+	})
 
-        c.JSON(http.StatusOK, gin.H{
-            "status": "ok",
-            "env":    cfg.App.Environment,
-            "server": cfg.ServerAddress(),
-            "database": gin.H{
-                "type":   dbKind,
-                "remote": isRemote,
-            },
-        })
-    })
+	// Middleware
+	app.Use(recover.New())
+	app.Use(logger.New())
+	app.Use(cors.New())
 
-    router.GET("/health/db", func(c *gin.Context) {
-        err := db.GetDB().Ping()
+	// Rutas de salud
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":    "ok",
+			"framework": "fiber",
+			"orm":       "gorm",
+		})
+	})
 
-        var version string
-        if err == nil {
-            _ = db.GetDB().QueryRow("SELECT sqlite_version()").Scan(&version)
-        }
+	// Configurar rutas de tareas
+	presentation.SetupTaskRoutesFiber(app, taskHandler)
 
-        statusCode := http.StatusOK
-        if err != nil {
-            statusCode = http.StatusServiceUnavailable
-        }
-
-        provider := "sqlite"
-        if cfg.Database.URL != "" {
-            provider = "libSQL"
-        }
-
-        var errMsg string
-        if err != nil {
-            errMsg = err.Error()
-        }
-
-        c.JSON(statusCode, gin.H{
-            "status":   map[bool]string{true: "up", false: "down"}[err == nil],
-            "version":  version,
-            "remote":   cfg.Database.URL != "",
-            "provider": provider,
-            "error":    errMsg,
-        })
-    })
-	// iniciar el servidor
-	log.Printf("Servidor iniciado en %s", cfg.ServerAddress())
-	if err := router.Run(cfg.GetServerAddress()); err != nil {
-		log.Fatalf("Error iniciando el servidor: %v", err)
-	}
-
+	// Iniciar servidor
+	log.Printf("Servidor Fiber + GORM iniciado en %s:%s", cfg.Server.Host, cfg.Server.Port)
+	log.Fatal(app.Listen(cfg.Server.Host + ":" + cfg.Server.Port))
 }
